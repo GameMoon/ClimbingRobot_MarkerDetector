@@ -12,12 +12,12 @@
 
 #define RES_X 640
 #define RES_Y 480
-#define FRAME_SIZE RES_X *RES_Y //Grayscale
+#define FRAME_SIZE RES_X *RES_Y //Grayscale 1 pixel = 1 byte
 
 std::string robot_ip_addr = "192.168.4.1"; 
 std::string tcp_server_addr = "127.0.0.1";
 
-int init_client_socket(const char * ip_address){
+int init_client_socket(const char * ip_address, int port){
     int sock = 0, valread;
     struct sockaddr_in serv_addr;
 
@@ -29,7 +29,7 @@ int init_client_socket(const char * ip_address){
     }
 
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
+    serv_addr.sin_port = htons(port);
 
     // Convert IPv4 and IPv6 addresses from text to binary form
     if (inet_pton(AF_INET, ip_address, &serv_addr.sin_addr) <= 0)
@@ -49,7 +49,50 @@ int init_client_socket(const char * ip_address){
     return sock;
 }
 
-int init_server_socket(const char * ip_address)
+int init_server_socket(const char * ip_address,int port){
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+       
+    // Forcefully attaching socket to the port 8080
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                                                  &opt, sizeof(opt)))
+    {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons( port );
+       
+    // Forcefully attaching socket to the port 8080
+    if (bind(server_fd, (struct sockaddr *)&address, 
+                                 sizeof(address))<0)
+    {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+    if (listen(server_fd, 3) < 0)
+    {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+
+    if ((new_socket = accept(server_fd, (struct sockaddr *)&address, 
+                       (socklen_t*)&addrlen))<0)
+    {
+        perror("accept");
+        exit(EXIT_FAILURE);
+    }
+    return new_socket;
+}
 
 void readFrame(char * frame,int sock,char* buffer){
     
@@ -69,19 +112,26 @@ void readFrame(char * frame,int sock,char* buffer){
 char buffer[1024] = {0};
 char frame[FRAME_SIZE] = {0};
 
-int main(){
-    
-    int sock = init_client_socket(robot_ip_addr.c_str());
-    printf("connected\n");
-    readFrame(frame,sock,buffer);
-    cv::Mat inputImage = cv::Mat(RES_Y, RES_X, CV_8UC1, frame);
+struct __attribute__((packed))
+{
+    uint8_t id;
+    float posX;
+    float posY;
+    float posZ;
+} tcpMessage;
 
-    // cv::Mat testImg = cv::imdecode(frame);
-    
-    // float cameraData[9] = { 791.4849, 0, 326.3476, 0, 791.6827, 241.2055, 0, 0,1};
-    // float distData[] = { 0.2295,-0.0969,0,0};
-    // cv::Mat inputImage = cv::imread("images/test2.png");
-    // cv::Mat inputImage = cv::imread("test.jpg");
+int main()
+{
+
+    printf("waiting for client\n");
+    int inc_client_socket = init_server_socket(tcp_server_addr.c_str(),SERVER_PORT); //waiting for a client
+    printf("client connected\n");
+
+    int sock = init_client_socket(robot_ip_addr.c_str(),ROBOT_PORT); //connect to the robot
+    printf("connected to the robot\n");
+    readFrame(frame,sock,buffer);
+    cv::Mat inputImage = cv::Mat(RES_Y, RES_X, CV_8UC1, frame); //create picture from incoming bytes
+
     
     float cameraData[9] = {746.610991662250, 0, 324.362968736563, 0, 747.861968591672, 230.323226676927, 0, 0, 1};
     float distData[] = {0.121615574199409, 1.05794624880243, -5.01145760540871, 0, 0};
@@ -94,27 +144,23 @@ int main(){
     cv::Ptr<cv::aruco::DetectorParameters> parameters = cv::aruco::DetectorParameters::create();
     cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
 
-    //readFrame(frame, sock, buffer);
  
     // parameters->adaptiveThreshWinSizeStep = 49;
     // parameters->adaptiveThreshWinSizeStep = 369;
-
-    while(1){
-        readFrame(frame, sock, buffer);
-
+    int isRunning = 1;
+    while(isRunning){
+        readFrame(frame, sock, buffer); //read frame and update inputImage data
 
         cv::aruco::detectMarkers(inputImage, dictionary, markerCorners, markerIds, parameters, rejectedCandidates, cameraMatrix, distCoeffs);
-
         cv::Mat outputImage = inputImage.clone();
        
-        // cv::threshold(outputImage, outputImage, 20, 255,cv::THRESH_BINARY);
 
         cv::Mat imageCopy;
         inputImage.copyTo(imageCopy);
         cv::cvtColor(imageCopy, imageCopy, cv::COLOR_GRAY2RGB);
 
         cv::aruco::drawDetectedMarkers(imageCopy, markerCorners, markerIds);
-        /*
+        
         if (markerIds.size() > 0)
         {
             cv::aruco::drawDetectedMarkers(imageCopy, markerCorners, markerIds);
@@ -124,21 +170,28 @@ int main(){
             for (int i = 0; i < markerIds.size(); i++)
             { 
                 cv::aruco::drawAxis(imageCopy, cameraMatrix, distCoeffs, rvecs[i], tvecs[i], 0.1);
+
+                //create tcp message and send it 
+                tcpMessage.id = markerIds[i];
+                tcpMessage.posX = tvecs[i][0];
+                tcpMessage.posY = tvecs[i][1];
+                tcpMessage.posZ = tvecs[i][2];
+
+                int sentBytes = send(inc_client_socket,&tcpMessage,sizeof(tcpMessage),0);
+                if(sentBytes == -1){
+                    printf("Client disconnectd\n");
+                    isRunning = 0;
+                    break;
+                }
                 // printf("%d : %f, %f, %f\n", markerIds[i], tvecs[i][0], tvecs[i][1], tvecs[i][2]);
             }
-        }*/
+        }
 
         cv::imshow("output", imageCopy);
-       char key = (char)cv::waitKey(100);
-       if (key == 27)
+        char key = (char)cv::waitKey(100);
+        if (key == 27)
            break;
     }
 
-   
-    // cv::imshow("output", inputImage);
-    // cv::imshow("output", testImg);
-    // cv::destroyWindow("output");
-
     return 0;
-
 }
