@@ -14,6 +14,8 @@
 #define RES_Y 480
 #define FRAME_SIZE RES_X *RES_Y //Grayscale 1 pixel = 1 byte
 
+#define MARKER_SIZE 0.02
+
 std::string robot_ip_addr = "192.168.4.1"; 
 std::string tcp_server_addr = "127.0.0.1";
 
@@ -94,6 +96,7 @@ int init_server_socket(const char * ip_address,int port){
     return new_socket;
 }
 
+
 void readFrame(char * frame,int sock,char* buffer){
     
     int sent_data = send(sock, "a", 1, 0);
@@ -106,33 +109,57 @@ void readFrame(char * frame,int sock,char* buffer){
         readSize += read_bytes;
        // printf("read %d\n", readSize);
     }
+
     printf("frame received\n");
 }
 
 char buffer[1024] = {0};
 char frame[FRAME_SIZE] = {0};
 
+
+char client_buff[100] = {0};
 struct __attribute__((packed))
 {
     uint8_t id;
     float posX;
     float posY;
     float posZ;
+    int frame_id;
 } tcpMessage;
 
+int error_code;
+int error_code_size = sizeof(error_code);
+
+char response_data = '#';
 int main()
 {
 
-    printf("waiting for client\n");
-    int inc_client_socket = init_server_socket(tcp_server_addr.c_str(),SERVER_PORT); //waiting for a client
-    printf("client connected\n");
 
+/*    tcpMessage.id = 1;
+    tcpMessage.posX = 4.5f;
+    tcpMessage.posY = 2.5f;
+    tcpMessage.posZ = 5.5f;
+
+    send(inc_client_socket,&tcpMessage,sizeof(tcpMessage),0);
+
+    tcpMessage.id = 2;
+    tcpMessage.posX = 4.5f;
+    tcpMessage.posY = 5.5f;
+    tcpMessage.posZ = 6.5f;
+
+    send(inc_client_socket, &tcpMessage, sizeof(tcpMessage), 0);
+*/
+    
     int sock = init_client_socket(robot_ip_addr.c_str(),ROBOT_PORT); //connect to the robot
     printf("connected to the robot\n");
+ 
     readFrame(frame,sock,buffer);
     cv::Mat inputImage = cv::Mat(RES_Y, RES_X, CV_8UC1, frame); //create picture from incoming bytes
+    // cv::imshow("output" + std::to_string(frameCount), inputImage);
 
-    
+    // char key = (char)cv::waitKey();
+    // return 1;
+
     float cameraData[9] = {746.610991662250, 0, 324.362968736563, 0, 747.861968591672, 230.323226676927, 0, 0, 1};
     float distData[] = {0.121615574199409, 1.05794624880243, -5.01145760540871, 0, 0};
     cv::Mat cameraMatrix = cv::Mat(3, 3, CV_32F, cameraData);
@@ -148,50 +175,90 @@ int main()
     // parameters->adaptiveThreshWinSizeStep = 49;
     // parameters->adaptiveThreshWinSizeStep = 369;
     int isRunning = 1;
+
     while(isRunning){
-        readFrame(frame, sock, buffer); //read frame and update inputImage data
 
-        cv::aruco::detectMarkers(inputImage, dictionary, markerCorners, markerIds, parameters, rejectedCandidates, cameraMatrix, distCoeffs);
-        cv::Mat outputImage = inputImage.clone();
-       
+        printf("waiting for client\n");
+        int inc_client_socket = init_server_socket(tcp_server_addr.c_str(),SERVER_PORT); //waiting for a client
+        printf("client connected\n");
 
-        cv::Mat imageCopy;
-        inputImage.copyTo(imageCopy);
-        cv::cvtColor(imageCopy, imageCopy, cv::COLOR_GRAY2RGB);
+        int clientConnected = 1;
+        int frameCounter =0;
+        while(clientConnected){
+            int read_bytes = read(inc_client_socket, client_buff, 100);
+           
 
-        cv::aruco::drawDetectedMarkers(imageCopy, markerCorners, markerIds);
-        
-        if (markerIds.size() > 0)
-        {
+            readFrame(frame, sock, buffer); //read frame and update inputImage data
+            // inputImage = cv::Mat(RES_Y, RES_X, CV_8UC1, frame);
+            printf("read %d, frameCount: %d\n", read_bytes, frameCounter);
+            frameCounter++;
+
+            cv::aruco::detectMarkers(inputImage, dictionary, markerCorners, markerIds, parameters, rejectedCandidates, cameraMatrix, distCoeffs);
+            cv::Mat outputImage = inputImage.clone();
+           
+
+            cv::Mat imageCopy;
+            
+            cv::cvtColor(inputImage, imageCopy, cv::COLOR_GRAY2RGB);
+
             cv::aruco::drawDetectedMarkers(imageCopy, markerCorners, markerIds);
-            std::vector<cv::Vec3d> rvecs, tvecs;
-            cv::aruco::estimatePoseSingleMarkers(markerCorners, 0.05, cameraMatrix, distCoeffs, rvecs, tvecs);
-            // draw axis for each marker
-            for (int i = 0; i < markerIds.size(); i++)
-            { 
-                cv::aruco::drawAxis(imageCopy, cameraMatrix, distCoeffs, rvecs[i], tvecs[i], 0.1);
+            
+            if (markerIds.size() > 0)
+            {
+                cv::aruco::drawDetectedMarkers(imageCopy, markerCorners, markerIds);
+                std::vector<cv::Vec3d> rvecs, tvecs;
+                cv::aruco::estimatePoseSingleMarkers(markerCorners, MARKER_SIZE, cameraMatrix, distCoeffs, rvecs, tvecs);
+                // draw axis for each marker
+                printf("Found %d markers\n",markerIds.size());
 
-                //create tcp message and send it 
-                tcpMessage.id = markerIds[i];
-                tcpMessage.posX = tvecs[i][0];
-                tcpMessage.posY = tvecs[i][1];
-                tcpMessage.posZ = tvecs[i][2];
+                for (int i = 0; i < markerIds.size(); i++)
+                { 
+                    cv::aruco::drawAxis(imageCopy, cameraMatrix, distCoeffs, rvecs[i], tvecs[i], 0.1);
 
-                int sentBytes = send(inc_client_socket,&tcpMessage,sizeof(tcpMessage),0);
-                if(sentBytes == -1){
-                    printf("Client disconnectd\n");
-                    isRunning = 0;
+                    //create tcp message and send it 
+                    tcpMessage.frame_id = frameCounter;
+                    tcpMessage.id = markerIds[i];
+                    tcpMessage.posX = tvecs[i][0];
+                    tcpMessage.posY = tvecs[i][1];
+                    tcpMessage.posZ = tvecs[i][2];
+                    
+                    
+                    //int read_bytes = read(inc_client_socket, client_buff, 100);
+                    //if(read_bytes > 0){
+                        int sentBytes = send(inc_client_socket,&tcpMessage,sizeof(tcpMessage),0);
+                        printf("marker sent %d\n",sentBytes);
+                        if(sentBytes == -1){
+                            printf("Client disconnectd\n");
+                            clientConnected = 0;
+                            break;
+                        }
+                    //}
+                    // printf("%d : %f, %f, %f\n", markerIds[i], tvecs[i][0], tvecs[i][1], tvecs[i][2]);
+                }
+            }
+            else{
+                int sentBytes = send(inc_client_socket, &response_data, 1, 0);
+                printf("no marker sent %d\n", sentBytes);
+                int status = getsockopt(inc_client_socket,SOL_SOCKET,SO_ERROR,&error_code,(socklen_t*)&error_code_size);
+                if(error_code != 0){   
+                    printf("Client disconnected\n");
+                    clientConnected = 0;
                     break;
                 }
-                // printf("%d : %f, %f, %f\n", markerIds[i], tvecs[i][0], tvecs[i][1], tvecs[i][2]);
+            }
+  
+            // cv::imshow("input", inputImage);
+            // cv::imshow("output"+std::to_string(frameCounter), imageCopy);
+            cv::imshow("output", imageCopy);
+
+            //
+
+            char key = (char)cv::waitKey(100);
+            if (key == 27){
+                isRunning = 0;
+                break;
             }
         }
-
-        cv::imshow("output", imageCopy);
-        char key = (char)cv::waitKey(100);
-        if (key == 27)
-           break;
     }
-
     return 0;
 }
