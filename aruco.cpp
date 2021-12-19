@@ -250,6 +250,7 @@ int main()
             // cv::imshow("input", inputImage);
             // cv::imshow("output"+std::to_string(frameCounter), imageCopy);
             cv::imshow("output", imageCopy);
+            //cv::imwrite("marker_tracking/output"+std::to_string(frameCounter)+".jpg", imageCopy);
 
             //
 
